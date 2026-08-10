@@ -10,23 +10,22 @@ from FastTelethon import ParallelTransferrer
 # Credentials
 API_ID = 38352841
 API_HASH = "02962cfd6b25235c0ebb0baba6eb1e14"
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8844358381:AAFAloCuU6-N3NBgNipjUd3WlaL9l0fLqTY")  # Get from env or set string
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8844358381:AAFAloCuU6-N3NBgNipjUd3WlaL9l0fLqTY")
 
 bot = TelegramClient("m3u8_uploader_bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# Render Port Binding Server
+# Dummy Server for Render Free Tier
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is live 24/7!")
+        self.wfile.write(b"Bot Active!")
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# Live Progress Bar Callback
 async def progress(current, total, event, start_time):
     now = time.time()
     diff = now - start_time
@@ -70,26 +69,36 @@ async def upload_handler(event):
     status = await event.reply("📥 **[1/2] Downloading Stream via FFmpeg...**")
     temp_file = os.path.join(os.getcwd(), f"temp_{int(time.time())}.mp4")
 
-    # 1. Download Stream via FFmpeg
-    cmd = [
-        'ffmpeg', '-y',
-        '-headers', 'Origin: https://web.classplusapp.com\r\nReferer: https://web.classplusapp.com/\r\n',
-        '-i', m3u8_url,
-        '-c', 'copy',
-        '-bsf:a', 'aac_adtstoasc',
-        temp_file
-    ]
+    # Command with Timeout and Custom Classplus Headers
+    cmd = (
+        f'ffmpeg -y '
+        f'-headers "Origin: https://web.classplusapp.com\r\nReferer: https://web.classplusapp.com/\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n" '
+        f'-i "{m3u8_url}" '
+        f'-c copy -bsf:a aac_adtstoasc "{temp_file}"'
+    )
 
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    await proc.wait()
+    # Execute via Shell with 15-minute max timeout
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=900)
+    except asyncio.TimeoutError:
+        await status.edit("❌ **Download Timed Out! (Stream takes too long or link died)**")
+        return
+    except Exception as e:
+        await status.edit(f"❌ **FFmpeg Error:** `{e}`")
+        return
 
     if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
-        await status.edit("❌ **Download Failed! Link Expired or Invalid.**")
+        error_log = stderr.decode()[-300:] if stderr else "Unknown Error"
+        await status.edit(f"❌ **Download Failed!**\n\n`{error_log}`")
         return
 
     await status.edit("⚡ **[2/2] Initializing Fast Parallel Upload to Telegram...**")
 
-    # 2. Upload via Fast Multi-Worker Engine
     uploader = ParallelTransferrer(bot, connection_count=4)
     start_time = time.time()
 
@@ -114,7 +123,6 @@ async def upload_handler(event):
             os.remove(temp_file)
 
 if __name__ == "__main__":
-    # Start web server thread for Render
     threading.Thread(target=run_web_server, daemon=True).start()
     print("Bot started successfully...")
     bot.run_until_disconnected()
