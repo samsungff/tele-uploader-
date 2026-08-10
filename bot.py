@@ -1,7 +1,6 @@
 import asyncio
 import os
 import time
-import re
 import subprocess
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -15,19 +14,19 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8844358381:AAFAloCuU6-N3NBgNipjUd3WlaL9
 
 bot = TelegramClient("m3u8_uploader_bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# Dummy Web Server for Render Keep-Alive
+# Dummy Server for Render Free Tier
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Active!")
+        self.wfile.write(b"Bot Active 24/7!")
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# Progress Bar Callback
+# Progress Bar Callback for Upload
 async def progress(current, total, event, start_time):
     now = time.time()
     diff = now - start_time
@@ -35,9 +34,9 @@ async def progress(current, total, event, start_time):
         percentage = (current / total) * 100 if total > 0 else 0
         speed = current / diff if diff > 0 else 0
         text = (
-            f"⚡ **M3U8 Parallel Upload Active**\n\n"
+            f"⚡ **Multi-Worker Telegram Upload Active**\n\n"
             f"📊 **Progress:** {percentage:.2f}%\n"
-            f"🚀 **Speed:** {speed / (1024*1024):.2f} MB/s\n"
+            f"🚀 **Upload Speed:** {speed / (1024*1024):.2f} MB/s\n"
             f"📁 **Uploaded:** {current / (1024*1024):.1f} MB / {total / (1024*1024):.1f} MB"
         )
         try:
@@ -48,7 +47,7 @@ async def progress(current, total, event, start_time):
 @bot.on(events.NewMessage(pattern=r"^/start"))
 async def start_handler(event):
     await event.reply(
-        "👋 **M3U8 Video Downloader & Uploader Bot**\n\n"
+        "👋 **yt-dlp Powered M3U8 Downloader & Uploader Bot**\n\n"
         "Send command in this format:\n"
         "`/upload M3U8_URL | File Name | Target_Chat_ID`"
     )
@@ -68,20 +67,21 @@ async def upload_handler(event):
     if not file_name.endswith(".mp4"):
         file_name += ".mp4"
 
-    status = await event.reply("📥 **[1/2] Connecting & Downloading Stream...**")
+    status = await event.reply("🚀 **[1/2] Downloading Stream via yt-dlp Engine (32 Parallel Threads)...**")
     temp_file = os.path.join(os.getcwd(), f"temp_{int(time.time())}.mp4")
 
-    # Command with explicit timeout settings and headers
-    headers = "Origin: https://web.classplusapp.com\r\nReferer: https://web.classplusapp.com/\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-    
+    # High Speed yt-dlp Command with Classplus Headers & 32 Concurrent Fragments
     cmd = [
-        'ffmpeg', '-y',
-        '-headers', headers,
-        '-rw_timeout', '10000000',  # 10s timeout
-        '-i', m3u8_url,
-        '-c', 'copy',
-        '-bsf:a', 'aac_adtstoasc',
-        temp_file
+        'yt-dlp',
+        '--add-header', 'Origin:https://web.classplusapp.com',
+        '--add-header', 'Referer:https://web.classplusapp.com/',
+        '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        '--concurrent-fragments', '32',
+        '-N', '32',
+        '--retries', '10',
+        '--fragment-retries', '10',
+        '-o', temp_file,
+        m3u8_url
     ]
 
     try:
@@ -91,15 +91,15 @@ async def upload_handler(event):
             stderr=subprocess.PIPE
         )
 
-        # Monitor FFmpeg download size dynamically
+        # Real-time Download Size Tracker
         last_update = time.time()
         while proc.returncode is None:
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             if os.path.exists(temp_file):
                 size_mb = os.path.getsize(temp_file) / (1024 * 1024)
-                if time.time() - last_update > 4:
+                if time.time() - last_update > 3:
                     try:
-                        await status.edit(f"📥 **[1/2] Downloading Stream...**\n💾 **Downloaded:** `{size_mb:.1f} MB`")
+                        await status.edit(f"🚀 **[1/2] Downloading via yt-dlp...**\n💾 **Downloaded Size:** `{size_mb:.1f} MB`")
                         last_update = time.time()
                     except Exception:
                         pass
@@ -113,8 +113,8 @@ async def upload_handler(event):
         return
 
     if not os.path.exists(temp_file) or os.path.getsize(temp_file) < 100 * 1024:
-        err_msg = stderr.decode()[-300:] if stderr else "Link Expired or Server Blocked."
-        await status.edit(f"❌ **Download Failed! (URL Expired or Restricted)**\n\n`{err_msg}`")
+        err_log = stderr.decode()[-300:] if stderr else "URL Expired or Blocked."
+        await status.edit(f"❌ **Download Failed!**\n\n`{err_log}`")
         return
 
     await status.edit("⚡ **[2/2] Initializing Fast Parallel Upload to Telegram...**")
@@ -132,7 +132,7 @@ async def upload_handler(event):
         await bot.send_file(
             dest_id,
             file=input_file,
-            caption=f"🎥 **{file_name}**\n\n⚡ *Uploaded via M3U8 Bot*",
+            caption=f"🎥 **{file_name}**\n\n⚡ *Uploaded via yt-dlp Parallel Engine*",
             supports_streaming=True
         )
         await status.edit("✅ **Video Uploaded Successfully!**")
