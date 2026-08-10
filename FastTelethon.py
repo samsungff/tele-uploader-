@@ -1,8 +1,17 @@
 import asyncio
 import os
 import math
-from telethon import TelegramClient, utils
+from telethon import TelegramClient
 from telethon.tl import types, functions
+
+# Custom part size helper function (Fix for Telethon update error)
+def get_part_size(file_size: int) -> int:
+    if file_size <= 100 * 1024 * 1024:
+        return 128  # 128 KB
+    elif file_size <= 500 * 1024 * 1024:
+        return 256  # 256 KB
+    else:
+        return 512  # 512 KB
 
 class ParallelTransferrer:
     def __init__(self, client: TelegramClient, connection_count: int = 4):
@@ -21,9 +30,10 @@ class ParallelTransferrer:
 
     async def upload_file(self, file_path: str, progress_callback=None):
         file_size = os.path.getsize(file_path)
-        part_size = utils.get_appropriate_part_size(file_size) * 1024
+        part_size_kb = get_part_size(file_size)
+        part_size = part_size_kb * 1024
         part_count = math.ceil(file_size / part_size)
-        file_id = utils.generate_random_long()
+        file_id = int.from_bytes(os.urandom(8), byteorder="big", signed=True)
         is_large = file_size > 10 * 1024 * 1024
 
         senders = await self._get_connections()
