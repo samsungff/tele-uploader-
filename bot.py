@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import re
 import subprocess
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -14,7 +15,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8844358381:AAFAloCuU6-N3NBgNipjUd3WlaL9
 
 bot = TelegramClient("m3u8_uploader_bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# Dummy Server for Render Free Tier
+# Dummy Web Server for Render Keep-Alive
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -26,6 +27,7 @@ def run_web_server():
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
+# Progress Bar Callback
 async def progress(current, total, event, start_time):
     now = time.time()
     diff = now - start_time
@@ -33,7 +35,7 @@ async def progress(current, total, event, start_time):
         percentage = (current / total) * 100 if total > 0 else 0
         speed = current / diff if diff > 0 else 0
         text = (
-            f"⚡ **M3U8 Parallel Engine Active**\n\n"
+            f"⚡ **M3U8 Parallel Upload Active**\n\n"
             f"📊 **Progress:** {percentage:.2f}%\n"
             f"🚀 **Speed:** {speed / (1024*1024):.2f} MB/s\n"
             f"📁 **Uploaded:** {current / (1024*1024):.1f} MB / {total / (1024*1024):.1f} MB"
@@ -66,35 +68,53 @@ async def upload_handler(event):
     if not file_name.endswith(".mp4"):
         file_name += ".mp4"
 
-    status = await event.reply("📥 **[1/2] Downloading Stream via FFmpeg...**")
+    status = await event.reply("📥 **[1/2] Connecting & Downloading Stream...**")
     temp_file = os.path.join(os.getcwd(), f"temp_{int(time.time())}.mp4")
 
-    # Command with Timeout and Custom Classplus Headers
-    cmd = (
-        f'ffmpeg -y '
-        f'-headers "Origin: https://web.classplusapp.com\r\nReferer: https://web.classplusapp.com/\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n" '
-        f'-i "{m3u8_url}" '
-        f'-c copy -bsf:a aac_adtstoasc "{temp_file}"'
-    )
+    # Command with explicit timeout settings and headers
+    headers = "Origin: https://web.classplusapp.com\r\nReferer: https://web.classplusapp.com/\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+    
+    cmd = [
+        'ffmpeg', '-y',
+        '-headers', headers,
+        '-rw_timeout', '10000000',  # 10s timeout
+        '-i', m3u8_url,
+        '-c', 'copy',
+        '-bsf:a', 'aac_adtstoasc',
+        temp_file
+    ]
 
-    # Execute via Shell with 15-minute max timeout
     try:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=900)
-    except asyncio.TimeoutError:
-        await status.edit("❌ **Download Timed Out! (Stream takes too long or link died)**")
-        return
+
+        # Monitor FFmpeg download size dynamically
+        last_update = time.time()
+        while proc.returncode is None:
+            await asyncio.sleep(3)
+            if os.path.exists(temp_file):
+                size_mb = os.path.getsize(temp_file) / (1024 * 1024)
+                if time.time() - last_update > 4:
+                    try:
+                        await status.edit(f"📥 **[1/2] Downloading Stream...**\n💾 **Downloaded:** `{size_mb:.1f} MB`")
+                        last_update = time.time()
+                    except Exception:
+                        pass
+            if proc.returncode is not None:
+                break
+
+        _, stderr = await proc.communicate()
+
     except Exception as e:
-        await status.edit(f"❌ **FFmpeg Error:** `{e}`")
+        await status.edit(f"❌ **Download Error:** `{e}`")
         return
 
-    if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
-        error_log = stderr.decode()[-300:] if stderr else "Unknown Error"
-        await status.edit(f"❌ **Download Failed!**\n\n`{error_log}`")
+    if not os.path.exists(temp_file) or os.path.getsize(temp_file) < 100 * 1024:
+        err_msg = stderr.decode()[-300:] if stderr else "Link Expired or Server Blocked."
+        await status.edit(f"❌ **Download Failed! (URL Expired or Restricted)**\n\n`{err_msg}`")
         return
 
     await status.edit("⚡ **[2/2] Initializing Fast Parallel Upload to Telegram...**")
