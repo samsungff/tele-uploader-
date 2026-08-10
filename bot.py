@@ -1,8 +1,10 @@
 import asyncio
 import os
 import time
-import subprocess
 import threading
+import requests
+import m3u8
+from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 from FastTelethon import ParallelTransferrer
@@ -14,7 +16,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8844358381:AAFAloCuU6-N3NBgNipjUd3WlaL9
 
 bot = TelegramClient("m3u8_uploader_bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# Dummy Server for Render Free Tier
+# Dummy Server for Render Keep-Alive
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -26,17 +28,17 @@ def run_web_server():
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# Progress Bar Callback for Upload
-async def progress(current, total, event, start_time):
+# Upload Progress Bar Callback
+async def upload_progress(current, total, event, start_time):
     now = time.time()
     diff = now - start_time
     if round(diff % 2) == 0 or current >= total:
         percentage = (current / total) * 100 if total > 0 else 0
         speed = current / diff if diff > 0 else 0
         text = (
-            f"⚡ **Multi-Worker Telegram Upload Active**\n\n"
+            f"⚡ **Telegram Upload Active**\n\n"
             f"📊 **Progress:** {percentage:.2f}%\n"
-            f"🚀 **Upload Speed:** {speed / (1024*1024):.2f} MB/s\n"
+            f"🚀 **Speed:** {speed / (1024*1024):.2f} MB/s\n"
             f"📁 **Uploaded:** {current / (1024*1024):.1f} MB / {total / (1024*1024):.1f} MB"
         )
         try:
@@ -44,10 +46,20 @@ async def progress(current, total, event, start_time):
         except Exception:
             pass
 
+def download_segment(args):
+    url, index, headers = args
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code == 200:
+            return index, res.content
+    except Exception:
+        pass
+    return index, None
+
 @bot.on(events.NewMessage(pattern=r"^/start"))
 async def start_handler(event):
     await event.reply(
-        "👋 **yt-dlp Powered M3U8 Downloader & Uploader Bot**\n\n"
+        "👋 **M3U8 Downloader & Uploader Bot**\n\n"
         "Send command in this format:\n"
         "`/upload M3U8_URL | File Name | Target_Chat_ID`"
     )
@@ -67,63 +79,83 @@ async def upload_handler(event):
     if not file_name.endswith(".mp4"):
         file_name += ".mp4"
 
-    status = await event.reply("🚀 **[1/2] Downloading Stream via yt-dlp Engine (32 Parallel Threads)...**")
+    status = await event.reply("🔎 **[1/2] Fetching Stream Playlist...**")
     temp_file = os.path.join(os.getcwd(), f"temp_{int(time.time())}.mp4")
 
-    # High Speed yt-dlp Command with Classplus Headers & 32 Concurrent Fragments
-    cmd = [
-        'yt-dlp',
-        '--add-header', 'Origin:https://web.classplusapp.com',
-        '--add-header', 'Referer:https://web.classplusapp.com/',
-        '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        '--concurrent-fragments', '32',
-        '-N', '32',
-        '--retries', '10',
-        '--fragment-retries', '10',
-        '-o', temp_file,
-        m3u8_url
-    ]
+    headers = {
+        'Origin': 'https://web.classplusapp.com',
+        'Referer': 'https://web.classplusapp.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    }
 
+    # 1. Parse M3U8 Playlist
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+        playlist = m3u8.load(m3u8_url, headers=headers)
+        segments = playlist.segments
+        
+        if not segments and playlist.playlists:
+            # Handle Master Playlist
+            variant_url = playlist.playlists[0].absolute_uri
+            playlist = m3u8.load(variant_url, headers=headers)
+            segments = playlist.segments
 
-        # Real-time Download Size Tracker
-        last_update = time.time()
-        while proc.returncode is None:
-            await asyncio.sleep(2)
-            if os.path.exists(temp_file):
-                size_mb = os.path.getsize(temp_file) / (1024 * 1024)
-                if time.time() - last_update > 3:
+        if not segments:
+            await status.edit("❌ **Invalid M3U8 Stream or URL Expired!**")
+            return
+
+        total_segments = len(segments)
+        await status.edit(f"📥 **[1/2] Downloading {total_segments} Segments in Parallel...**")
+
+        segment_urls = [(seg.absolute_uri, i, headers) for i, seg in enumerate(segments)]
+        downloaded_chunks = {}
+
+        # 2. Multi-threaded parallel downloading (16 Workers)
+        loop = asyncio.get_event_loop()
+        start_dl_time = time.time()
+        
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [loop.run_in_executor(None, download_segment, arg) for arg in segment_urls]
+            
+            done_count = 0
+            for future in asyncio.as_completed(futures):
+                idx, content = await future
+                if content:
+                    downloaded_chunks[idx] = content
+                done_count += 1
+
+                if time.time() - start_dl_time > 3 or done_count == total_segments:
+                    start_dl_time = time.time()
+                    progress_pct = (done_count / total_segments) * 100
                     try:
-                        await status.edit(f"🚀 **[1/2] Downloading via yt-dlp...**\n💾 **Downloaded Size:** `{size_mb:.1f} MB`")
-                        last_update = time.time()
+                        await status.edit(
+                            f"🚀 **[1/2] Downloading Stream...**\n"
+                            f"📊 **Progress:** {progress_pct:.1f}% ({done_count}/{total_segments} chunks)"
+                        )
                     except Exception:
                         pass
-            if proc.returncode is not None:
-                break
 
-        _, stderr = await proc.communicate()
+        # 3. Merge segments into single file
+        with open(temp_file, "wb") as f:
+            for i in range(total_segments):
+                if i in downloaded_chunks:
+                    f.write(downloaded_chunks[i])
 
     except Exception as e:
-        await status.edit(f"❌ **Download Error:** `{e}`")
+        await status.edit(f"❌ **Stream Download Error:** `{e}`")
         return
 
     if not os.path.exists(temp_file) or os.path.getsize(temp_file) < 100 * 1024:
-        err_log = stderr.decode()[-300:] if stderr else "URL Expired or Blocked."
-        await status.edit(f"❌ **Download Failed!**\n\n`{err_log}`")
+        await status.edit("❌ **Download Failed! Empty File Generated.**")
         return
 
     await status.edit("⚡ **[2/2] Initializing Fast Parallel Upload to Telegram...**")
 
+    # 4. Fast Upload via Parallel Sockets
     uploader = ParallelTransferrer(bot, connection_count=4)
     start_time = time.time()
 
     async def prog_cb(current, total):
-        await progress(current, total, status, start_time)
+        await upload_progress(current, total, status, start_time)
 
     try:
         input_file = await uploader.upload_file(temp_file, progress_callback=prog_cb)
@@ -132,7 +164,7 @@ async def upload_handler(event):
         await bot.send_file(
             dest_id,
             file=input_file,
-            caption=f"🎥 **{file_name}**\n\n⚡ *Uploaded via yt-dlp Parallel Engine*",
+            caption=f"🎥 **{file_name}**\n\n⚡ *Uploaded via Multi-Worker Engine*",
             supports_streaming=True
         )
         await status.edit("✅ **Video Uploaded Successfully!**")
