@@ -1,5 +1,4 @@
 telethon
 cryptg
-pyrogram
-tgcrypto
-yt-dlp
+m3u8
+requests
