@@ -2,17 +2,31 @@ import asyncio
 import os
 import time
 import subprocess
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 from FastTelethon import ParallelTransferrer
 
 # Credentials
 API_ID = 38352841
 API_HASH = "02962cfd6b25235c0ebb0baba6eb1e14"
-BOT_TOKEN = "8844358381:AAFAloCuU6-N3NBgNipjUd3WlaL9l0fLqTY"  # BotFather se mila token yahan dalo
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8844358381:AAFAloCuU6-N3NBgNipjUd3WlaL9l0fLqTY")  # Get from env or set string
 
 bot = TelegramClient("m3u8_uploader_bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# Live Progress Bar
+# Render Port Binding Server
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is live 24/7!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+# Live Progress Bar Callback
 async def progress(current, total, event, start_time):
     now = time.time()
     diff = now - start_time
@@ -97,29 +111,10 @@ async def upload_handler(event):
         await status.edit(f"❌ **Upload Error:** `{e}`")
     finally:
         if os.path.exists(temp_file):
-            import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
-
-# Render ko fake Web Server response dene ke liye
-class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is active 24/7!")
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-    server.serve_forever()
-
-# Start dummy HTTP server in background thread
-threading.Thread(target=run_web_server, daemon=True).start()
-
-# Start your Telethon Bot
-print("Bot started successfully...")
-bot.run_until_disconnected()
             os.remove(temp_file)
 
-print("Bot started successfully...")
-bot.run_until_disconnected()
+if __name__ == "__main__":
+    # Start web server thread for Render
+    threading.Thread(target=run_web_server, daemon=True).start()
+    print("Bot started successfully...")
+    bot.run_until_disconnected()
