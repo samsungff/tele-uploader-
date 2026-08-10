@@ -97,6 +97,28 @@ async def upload_handler(event):
         await status.edit(f"❌ **Upload Error:** `{e}`")
     finally:
         if os.path.exists(temp_file):
+            import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+# Render ko fake Web Server response dene ke liye
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is active 24/7!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+# Start dummy HTTP server in background thread
+threading.Thread(target=run_web_server, daemon=True).start()
+
+# Start your Telethon Bot
+print("Bot started successfully...")
+bot.run_until_disconnected()
             os.remove(temp_file)
 
 print("Bot started successfully...")
